@@ -73,51 +73,14 @@ def load_sent_news():
         return []
 
 def save_sent_news(sent_list):
-    # Przechowuj tylko ostatnie 200 komunikatów, aby plik nie rósł w nieskończoność
     sent_list = sent_list[-200:]
     with open(SENT_NEWS_FILE, "w", encoding="utf-8") as f:
         json.dump(sent_list, f, ensure_ascii=False, indent=2)
 
 # ---------------------------------------------------------
-# POBIERANIE NOTOWAŃ
-# ---------------------------------------------------------
-def get_stock_data(ticker):
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    }
-    
-    clean_ticker = ticker.lower().strip()
-    variants = [clean_ticker, f"{clean_ticker}.pl", f"{clean_ticker}e"]
-    
-    for var in variants:
-        try:
-            url = f"https://stooq.pl/q/l/?s={var}&f=sd2t2ohlcv&h&e=json"
-            response = requests.get(url, headers=headers, timeout=3)
-            if response.status_code == 200:
-                data = response.json()
-                symbols = data.get("symbols", [])
-                if symbols:
-                    symbol_data = symbols[0]
-                    close_price = symbol_data.get("close")
-                    change_percent = symbol_data.get("change_percent")
-                    
-                    if close_price is not None and str(close_price) != "N/A":
-                        return {
-                            "price": float(close_price),
-                            "change_percent": float(change_percent) if change_percent is not None else 0.0
-                        }
-        except Exception as e:
-            print(f"Stooq API err ({var}): {e}")
-
-    return None
-
-# ---------------------------------------------------------
-# AUTOMATYCZNY MONITORING WIADOMOŚCI I ESPI/EBI W TLE
+# AUTOMATYCZNY MONITORING WIADOMOŚCI W TLE
 # ---------------------------------------------------------
 def check_news_feed():
-    """
-    Sprawdza strumień wiadomości giełdowych i wysyła alerty na Telegramie.
-    """
     chat_id = get_user_chat_id()
     if not chat_id:
         return
@@ -127,7 +90,6 @@ def check_news_feed():
     if not tickers:
         return
 
-    # Kanał RSS z wiadomościami giełdowymi (np. Bankier.pl)
     rss_url = "https://www.bankier.pl/rss/wiadomosci.xml"
     
     try:
@@ -143,12 +105,10 @@ def check_news_feed():
             title = entry.title
             link = entry.link
 
-            # Sprawdzanie, czy tytuł wiadomości wspomina o którejś z obserwowanych spółek
             for item in tickers:
                 ticker = item["ticker"].upper()
                 name = item.get("name", "").upper()
 
-                # Warunek trafienia: nazwa spółki lub ticker w tytule
                 match_ticker = f" {ticker} " in f" {title.upper()} " or f"({ticker})" in title.upper()
                 match_name = name and len(name) > 3 and name in title.upper()
 
@@ -156,10 +116,10 @@ def check_news_feed():
                     message_text = (
                         f"🔔 **Nowa informacja: {ticker}**\n\n"
                         f"📰 **{title}**\n\n"
-                        f"🔗 [Przeczytaj cały artykuł]({link})"
+                        f"🔗 [Przeczytaj artykuł]({link})"
                     )
                     
-                    bot.send_message(chat_id, message_text, parse_mode="Markdown", disable_web_page_preview=False)
+                    bot.send_message(chat_id, message_text, parse_mode="Markdown")
                     sent_news.append(news_id)
                     updated_sent = True
                     break
@@ -171,15 +131,12 @@ def check_news_feed():
         print(f"⚠️ Błąd podczas sprawdzania wiadomości: {e}")
 
 def monitor_stock_job():
-    """Pętla wykonująca się w tle co 10 minut."""
     while True:
         try:
-            print("🔍 Sprawdzanie nowych komunikatów i wiadomości giełdowych...")
             check_news_feed()
         except Exception as e:
             print(f"⚠️ Błąd w monitor_stock_job: {e}")
 
-        # Odczekaj 10 minut (600 sekund)
         time.sleep(600)
 
 # ---------------------------------------------------------
@@ -191,11 +148,10 @@ def send_welcome(message):
     help_text = (
         "🤖 **Monitor NewConnect - Bot**\n\n"
         "Dostępne komendy:\n"
-        "🔹 `/lista` - Wyświetla obserwowane spółki z notowaniami\n"
-        "🔹 `/kurs <TICKER>` - Sprawdza pojedynczą spółkę\n"
+        "🔹 `/lista` - Wyświetla prostą listę obserwowanych spółek\n"
         "🔹 `/dodaj <TICKER> <Nazwa>` - Dodaje ticker do obserwacji\n"
         "🔹 `/usun <TICKER>` - Usuwa ticker z listy\n\n"
-        "🔔 *Bot automatycznie wysyła powiadomienia w tle o nowych wiadomościach dla Twoich spółek!*"
+        "🔔 *Bot automatycznie powiadamia Cię na bieżąco o nowych komunikatach!*"
     )
     bot.reply_to(message, help_text, parse_mode="Markdown")
 
@@ -209,70 +165,11 @@ def list_tickers(message):
         bot.reply_to(message, "📂 Lista obserwowanych tickerów jest pusta.")
         return
 
-    msg = bot.reply_to(message, "⏳ Pobieram aktualne notowania...")
-
-    text = f"📊 **Obserwowane spółki ({len(tickers)}):**\n\n"
-    
+    text = f"📋 **Obserwowane spółki ({len(tickers)}):**\n\n"
     for t in tickers:
-        ticker = t['ticker']
-        name = t.get('name', '')
-        name_str = f" ({name})" if name else ""
-        
-        stock_info = get_stock_data(ticker)
-        
-        if stock_info:
-            price = stock_info["price"]
-            change = stock_info["change_percent"]
-            
-            if change > 0:
-                emoji = "🟢"
-                sign = "+"
-            elif change < 0:
-                emoji = "🔴"
-                sign = ""
-            else:
-                emoji = "⚪"
-                sign = ""
-                
-            text += f"{emoji} **{ticker}**{name_str}: `{price:.2f} PLN` ({sign}{change:.2f}%)\n"
-        else:
-            text += f"⚪ **{ticker}**{name_str}: *brak danych z giełdy*\n"
+        name_str = f" - {t['name']}" if t.get('name') else ""
+        text += f"• **{t['ticker']}**{name_str}\n"
 
-    try:
-        bot.edit_message_text(text, chat_id=msg.chat.id, message_id=msg.message_id, parse_mode="Markdown")
-    except Exception as e:
-        bot.reply_to(message, text, parse_mode="Markdown")
-
-@bot.message_handler(commands=['kurs'])
-def get_single_stock(message):
-    save_user_chat_id(message.chat.id)
-    args = message.text.split(maxsplit=1)
-    
-    if len(args) < 2:
-        bot.reply_to(message, "⚠️ Podaj ticker! Składnia: `/kurs TICKER`", parse_mode="Markdown")
-        return
-
-    ticker = args[1].strip().upper()
-    stock_info = get_stock_data(ticker)
-    
-    if stock_info:
-        price = stock_info["price"]
-        change = stock_info["change_percent"]
-        
-        if change > 0:
-            emoji = "🟢"
-            sign = "+"
-        elif change < 0:
-            emoji = "🔴"
-            sign = ""
-        else:
-            emoji = "⚪"
-            sign = ""
-            
-        text = f"{emoji} **{ticker}**\n📈 **Kurs:** `{price:.2f} PLN`\n📊 **Zmiana:** `{sign}{change:.2f}%`"
-    else:
-        text = f"❌ Nie udało się pobrać danych dla **{ticker}**."
-        
     bot.reply_to(message, text, parse_mode="Markdown")
 
 @bot.message_handler(commands=['dodaj'])
@@ -340,5 +237,4 @@ if __name__ == "__main__":
     
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-
 
