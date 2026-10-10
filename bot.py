@@ -1,5 +1,6 @@
 import json
 import os
+import time
 import threading
 from flask import Flask
 import telebot
@@ -7,8 +8,9 @@ import telebot
 # ---------------------------------------------------------
 # KONFIGURACJA
 # ---------------------------------------------------------
-TOKEN = "8871900897:AAFIfU-7-NjDeULChGNqf5XeV-jXwfaD9yA"  # <--- Podmień na swój token z BotFather!
+TOKEN = "TUTAJ_WKLEJ_SWOJ_TOKEN_Z_BOTFATHER"  # <--- Upewnij się, że wklejasz swój token!
 TRACKED_FILE = "tracked.json"
+CONFIG_FILE = "config.json"
 
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
@@ -34,12 +36,70 @@ def save_tracked(data):
     with open(TRACKED_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+def save_user_chat_id(chat_id):
+    """Zapisuje Twój Chat ID, aby bot wiedział, gdzie wysyłać automatyczne powiadomienia."""
+    config = {}
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                config = json.load(f)
+        except Exception:
+            config = {}
+    
+    if config.get("chat_id") != chat_id:
+        config["chat_id"] = chat_id
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2)
+
+def get_user_chat_id():
+    """Pobiera zapisany Chat ID."""
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                config = json.load(f)
+                return config.get("chat_id")
+        except Exception:
+            return None
+    return None
+
+# ---------------------------------------------------------
+# AUTOMATYCZNY MONITORING W TLE
+# ---------------------------------------------------------
+def monitor_stock_job():
+    """Funkcja wykonywana cyklicznie w tle co 15 minut."""
+    while True:
+        try:
+            chat_id = get_user_chat_id()
+            data = load_tracked()
+            tickers = data.get("tickers", [])
+
+            # Monitoring uruchomi się tylko wtedy, gdy bot zna Twój Chat ID oraz masz dodane spółki
+            if chat_id and tickers:
+                print(f"🔍 Rozpoczynam automatyczne sprawdzanie dla {len(tickers)} tickerów...")
+                
+                # --- TUTAJ MOŻNA WSTAWIĆ KOD POBIERAJĄCY NOTOWANIA / KOMUNIKATY ---
+                for item in tickers:
+                    ticker = item["ticker"]
+                    name = item.get("name", "")
+                    
+                    # Przykład: miejsce na zapytanie HTTP do strony z notowaniami/komunikatami
+                    # Jeśli zostanie wykryta ważna zmiana:
+                    # bot.send_message(chat_id, f"🔔 **Alert NewConnect**: Nowa informacja dla {ticker}!", parse_mode="Markdown")
+                    pass
+                # ------------------------------------------------------------------
+
+        except Exception as e:
+            print(f"⚠️ Błąd w pętli monitorującej: {e}")
+
+        # Odczekaj 15 minut (900 sekund) do następnego sprawdzania
+        time.sleep(900)
+
 # ---------------------------------------------------------
 # OBSŁUGA KOMEND TELEGRAMA
 # ---------------------------------------------------------
-
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
+    save_user_chat_id(message.chat.id)
     help_text = (
         "🤖 **Monitor NewConnect - Bot**\n\n"
         "Dostępne komendy:\n"
@@ -53,6 +113,7 @@ def send_welcome(message):
 
 @bot.message_handler(commands=['lista'])
 def list_tickers(message):
+    save_user_chat_id(message.chat.id)
     data = load_tracked()
     tickers = data.get("tickers", [])
     
@@ -69,6 +130,7 @@ def list_tickers(message):
 
 @bot.message_handler(commands=['dodaj'])
 def add_ticker(message):
+    save_user_chat_id(message.chat.id)
     args = message.text.split(maxsplit=2)
     
     if len(args) < 2:
@@ -96,6 +158,7 @@ def add_ticker(message):
 
 @bot.message_handler(commands=['usun'])
 def remove_ticker(message):
+    save_user_chat_id(message.chat.id)
     args = message.text.split(maxsplit=1)
     
     if len(args) < 2:
@@ -115,19 +178,23 @@ def remove_ticker(message):
         bot.reply_to(message, f"❌ Nie znaleziono tickera **{ticker}** na liście.", parse_mode="Markdown")
 
 # ---------------------------------------------------------
-# ATROPA DLA RENDERA (PROSTY SERWER FLASK)
+# PROSTY SERWER FLASK DLA RENDERA
 # ---------------------------------------------------------
 @app.route("/")
 def home():
     return "Bot NewConnect działa na Render.com!"
 
 # ---------------------------------------------------------
-# URUCHOMIENIE BOTA I SERWERA
+# URUCHOMIENIE BOTA, MONITORINGU I SERWERA
 # ---------------------------------------------------------
 if __name__ == "__main__":
-    # Uruchomienie pętli bota Telegram w osobnym wątku
+    # 1. Uruchomienie pętli bota Telegram w osobnym wątku
     threading.Thread(target=bot.infinity_polling, daemon=True).start()
     
-    # Uruchomienie serwera WWW wymaganego przez darmowy plan Render
+    # 2. Uruchomienie automatycznego monitora w tle w osobnym wątku
+    threading.Thread(target=monitor_stock_job, daemon=True).start()
+    
+    # 3. Uruchomienie serwera WWW wymaganego przez darmowy plan Render
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
