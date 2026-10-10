@@ -7,7 +7,7 @@ import telebot
 # ---------------------------------------------------------
 # KONFIGURACJA
 # ---------------------------------------------------------
-TOKEN = "TUTAJ_WKLEJ_SWOJ_TOKEN_Z_BOTFATHER"  # <--- Podmień na swój token z BotFather!
+TOKEN = "8871900897:AAFIfU-7-NjDeULChGNqf5XeV-jXwfaD9yA"  # <--- Podmień na swój token z BotFather!
 TRACKED_FILE = "tracked.json"
 
 bot = telebot.TeleBot(TOKEN)
