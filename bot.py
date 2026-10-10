@@ -2,13 +2,14 @@ import json
 import os
 import time
 import threading
+import requests
 from flask import Flask
 import telebot
 
 # ---------------------------------------------------------
 # KONFIGURACJA
 # ---------------------------------------------------------
-TOKEN = "8871900897:AAFIfU-7-NjDeULChGNqf5XeV-jXwfaD9yA"  # <--- Upewnij się, że wklejasz swój token!
+TOKEN = "8871900897:AAFIfU-7-NjDeULChGNqf5XeV-jXwfaD9yA"  # <--- Podmień swój token z BotFather!
 TRACKED_FILE = "tracked.json"
 CONFIG_FILE = "config.json"
 
@@ -37,7 +38,6 @@ def save_tracked(data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 def save_user_chat_id(chat_id):
-    """Zapisuje Twój Chat ID, aby bot wiedział, gdzie wysyłać automatyczne powiadomienia."""
     config = {}
     if os.path.exists(CONFIG_FILE):
         try:
@@ -52,7 +52,6 @@ def save_user_chat_id(chat_id):
             json.dump(config, f, indent=2)
 
 def get_user_chat_id():
-    """Pobiera zapisany Chat ID."""
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -63,35 +62,47 @@ def get_user_chat_id():
     return None
 
 # ---------------------------------------------------------
+# POBIERANIE NOTOWAŃ ZE STOOQ
+# ---------------------------------------------------------
+def get_stock_data(ticker):
+    """
+    Pobiera aktualny kurs i zmianę procentową dla podanego bocznego symbolu giełdowego.
+    """
+    try:
+        url = f"https://stooq.pl/q/l/?s={ticker.lower()}&f=sd2t2ohlcv&h&e=json"
+        response = requests.get(url, timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            symbols = data.get("symbols", [])
+            if symbols and len(symbols) > 0:
+                symbol_data = symbols[0]
+                close_price = symbol_data.get("close")
+                change_percent = symbol_data.get("change_percent")
+                
+                if close_price is not None and close_price != "N/A":
+                    return {
+                        "price": float(close_price),
+                        "change_percent": float(change_percent) if change_percent is not None else 0.0
+                    }
+    except Exception as e:
+        print(f"Błąd podczas pobierania notowań dla {ticker}: {e}")
+    return None
+
+# ---------------------------------------------------------
 # AUTOMATYCZNY MONITORING W TLE
 # ---------------------------------------------------------
 def monitor_stock_job():
-    """Funkcja wykonywana cyklicznie w tle co 15 minut."""
     while True:
         try:
             chat_id = get_user_chat_id()
             data = load_tracked()
             tickers = data.get("tickers", [])
 
-            # Monitoring uruchomi się tylko wtedy, gdy bot zna Twój Chat ID oraz masz dodane spółki
             if chat_id and tickers:
-                print(f"🔍 Rozpoczynam automatyczne sprawdzanie dla {len(tickers)} tickerów...")
-                
-                # --- TUTAJ MOŻNA WSTAWIĆ KOD POBIERAJĄCY NOTOWANIA / KOMUNIKATY ---
-                for item in tickers:
-                    ticker = item["ticker"]
-                    name = item.get("name", "")
-                    
-                    # Przykład: miejsce na zapytanie HTTP do strony z notowaniami/komunikatami
-                    # Jeśli zostanie wykryta ważna zmiana:
-                    # bot.send_message(chat_id, f"🔔 **Alert NewConnect**: Nowa informacja dla {ticker}!", parse_mode="Markdown")
-                    pass
-                # ------------------------------------------------------------------
-
+                print(f"🔍 Pętla tła aktywna dla {len(tickers)} tickerów...")
         except Exception as e:
             print(f"⚠️ Błąd w pętli monitorującej: {e}")
 
-        # Odczekaj 15 minut (900 sekund) do następnego sprawdzania
         time.sleep(900)
 
 # ---------------------------------------------------------
@@ -103,11 +114,12 @@ def send_welcome(message):
     help_text = (
         "🤖 **Monitor NewConnect - Bot**\n\n"
         "Dostępne komendy:\n"
-        "🔹 `/lista` - Wyświetla listę obserwowanych spółek\n"
+        "🔹 `/lista` - Pobiera listę obserwowanych spółek wraz z kursami i zmianą %\n"
+        "🔹 `/kurs <TICKER>` - Sprawdza notowanie wybranej spółki\n"
         "🔹 `/dodaj <TICKER> <Nazwa>` - Dodaje ticker do obserwacji\n"
         "🔹 `/usun <TICKER>` - Usuwa ticker z listy\n\n"
         "Przykład dodawania:\n"
-        "`/dodaj ABC Firma ABC S.A.`"
+        "`/dodaj WASKO Wasko S.A.`"
     )
     bot.reply_to(message, help_text, parse_mode="Markdown")
 
@@ -121,11 +133,69 @@ def list_tickers(message):
         bot.reply_to(message, "📂 Lista obserwowanych tickerów jest pusta.")
         return
 
-    text = f"📊 **Obserwowane tickery ({len(tickers)}):**\n\n"
-    for t in tickers:
-        name_str = f" - {t['name']}" if t.get('name') else ""
-        text += f"• **{t['ticker']}**{name_str}\n"
+    # Informacja o przetwarzaniu zapytania
+    msg = bot.reply_to(message, "⏳ Pobieram aktualne notowania...")
 
+    text = f"📊 **Obserwowane spółki ({len(tickers)}):**\n\n"
+    
+    for t in tickers:
+        ticker = t['ticker']
+        name = t.get('name', '')
+        name_str = f" ({name})" if name else ""
+        
+        stock_info = get_stock_data(ticker)
+        
+        if stock_info:
+            price = stock_info["price"]
+            change = stock_info["change_percent"]
+            
+            # Wskaźnik graficzny (zielona/czerwona kropka)
+            if change > 0:
+                emoji = "🟢"
+                sign = "+"
+            elif change < 0:
+                emoji = "🔴"
+                sign = ""
+            else:
+                emoji = "⚪"
+                sign = ""
+                
+            text += f"{emoji} **{ticker}**{name_str}: `{price:.2f} PLN` ({sign}{change:.2f}%)\n"
+        else:
+            text += f"⚪ **{ticker}**{name_str}: *brak danych*\n"
+
+    bot.edit_message_text(text, chat_id=msg.chat.id, message_id=msg.message_id, parse_mode="Markdown")
+
+@bot.message_handler(commands=['kurs'])
+def get_single_stock(message):
+    save_user_chat_id(message.chat.id)
+    args = message.text.split(maxsplit=1)
+    
+    if len(args) < 2:
+        bot.reply_to(message, "⚠️ Podaj ticker! Składnia: `/kurs TICKER`", parse_mode="Markdown")
+        return
+
+    ticker = args[1].strip().upper()
+    stock_info = get_stock_data(ticker)
+    
+    if stock_info:
+        price = stock_info["price"]
+        change = stock_info["change_percent"]
+        
+        if change > 0:
+            emoji = "🟢"
+            sign = "+"
+        elif change < 0:
+            emoji = "🔴"
+            sign = ""
+        else:
+            emoji = "⚪"
+            sign = ""
+            
+        text = f"{emoji} **{ticker}**\n📈 **Kurs:** `{price:.2f} PLN`\n📊 **Zmiana:** `{sign}{change:.2f}%`"
+    else:
+        text = f"❌ Nie udało się pobrać danych dla **{ticker}**."
+        
     bot.reply_to(message, text, parse_mode="Markdown")
 
 @bot.message_handler(commands=['dodaj'])
@@ -188,13 +258,10 @@ def home():
 # URUCHOMIENIE BOTA, MONITORINGU I SERWERA
 # ---------------------------------------------------------
 if __name__ == "__main__":
-    # 1. Uruchomienie pętli bota Telegram w osobnym wątku
     threading.Thread(target=bot.infinity_polling, daemon=True).start()
-    
-    # 2. Uruchomienie automatycznego monitora w tle w osobnym wątku
     threading.Thread(target=monitor_stock_job, daemon=True).start()
     
-    # 3. Uruchomienie serwera WWW wymaganego przez darmowy plan Render
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
