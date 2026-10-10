@@ -3,15 +3,17 @@ import os
 import time
 import threading
 import requests
+import feedparser
 from flask import Flask
 import telebot
 
 # ---------------------------------------------------------
 # KONFIGURACJA
 # ---------------------------------------------------------
-TOKEN = "8871900897:AAFIfU-7-NjDeULChGNqf5XeV-jXwfaD9yA"  # <--- Wklej swój token!
+TOKEN = "8871900897:AAFIfU-7-NjDeULChGNqf5XeV-jXwfaD9yA"  # <--- Podmień na swój token!
 TRACKED_FILE = "tracked.json"
 CONFIG_FILE = "config.json"
+SENT_NEWS_FILE = "sent_news.json"
 
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
@@ -61,24 +63,31 @@ def get_user_chat_id():
             return None
     return None
 
+def load_sent_news():
+    if not os.path.exists(SENT_NEWS_FILE):
+        return []
+    try:
+        with open(SENT_NEWS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+def save_sent_news(sent_list):
+    # Przechowuj tylko ostatnie 200 komunikatów, aby plik nie rósł w nieskończoność
+    sent_list = sent_list[-200:]
+    with open(SENT_NEWS_FILE, "w", encoding="utf-8") as f:
+        json.dump(sent_list, f, ensure_ascii=False, indent=2)
+
 # ---------------------------------------------------------
-# POBIERANIE NOTOWAŃ ZE STOOQ
+# POBIERANIE NOTOWAŃ
 # ---------------------------------------------------------
 def get_stock_data(ticker):
-    """
-    Pobiera dane giełdowe, testując różne warianty symboli na Stooq.
-    """
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
     
     clean_ticker = ticker.lower().strip()
-    # Lista wariantów symbolu do sprawdzenia na Stooq dla polskiej giełdy
-    variants = [
-        clean_ticker, 
-        f"{clean_ticker}.pl", 
-        f"{clean_ticker}e" # czasami NewConnect ma końcówkę e lub inne oznaczenia
-    ]
+    variants = [clean_ticker, f"{clean_ticker}.pl", f"{clean_ticker}e"]
     
     for var in variants:
         try:
@@ -103,21 +112,75 @@ def get_stock_data(ticker):
     return None
 
 # ---------------------------------------------------------
-# AUTOMATYCZNY MONITORING W TLE
+# AUTOMATYCZNY MONITORING WIADOMOŚCI I ESPI/EBI W TLE
 # ---------------------------------------------------------
+def check_news_feed():
+    """
+    Sprawdza strumień wiadomości giełdowych i wysyła alerty na Telegramie.
+    """
+    chat_id = get_user_chat_id()
+    if not chat_id:
+        return
+
+    data = load_tracked()
+    tickers = data.get("tickers", [])
+    if not tickers:
+        return
+
+    # Kanał RSS z wiadomościami giełdowymi (np. Bankier.pl)
+    rss_url = "https://www.bankier.pl/rss/wiadomosci.xml"
+    
+    try:
+        feed = feedparser.parse(rss_url)
+        sent_news = load_sent_news()
+        updated_sent = False
+
+        for entry in feed.entries:
+            news_id = getattr(entry, 'id', entry.link)
+            if news_id in sent_news:
+                continue
+
+            title = entry.title
+            link = entry.link
+
+            # Sprawdzanie, czy tytuł wiadomości wspomina o którejś z obserwowanych spółek
+            for item in tickers:
+                ticker = item["ticker"].upper()
+                name = item.get("name", "").upper()
+
+                # Warunek trafienia: nazwa spółki lub ticker w tytule
+                match_ticker = f" {ticker} " in f" {title.upper()} " or f"({ticker})" in title.upper()
+                match_name = name and len(name) > 3 and name in title.upper()
+
+                if match_ticker or match_name:
+                    message_text = (
+                        f"🔔 **Nowa informacja: {ticker}**\n\n"
+                        f"📰 **{title}**\n\n"
+                        f"🔗 [Przeczytaj cały artykuł]({link})"
+                    )
+                    
+                    bot.send_message(chat_id, message_text, parse_mode="Markdown", disable_web_page_preview=False)
+                    sent_news.append(news_id)
+                    updated_sent = True
+                    break
+
+        if updated_sent:
+            save_sent_news(sent_news)
+
+    except Exception as e:
+        print(f"⚠️ Błąd podczas sprawdzania wiadomości: {e}")
+
 def monitor_stock_job():
+    """Pętla wykonująca się w tle co 10 minut."""
     while True:
         try:
-            chat_id = get_user_chat_id()
-            data = load_tracked()
-            tickers = data.get("tickers", [])
-
-            if chat_id and tickers:
-                print(f"🔍 Pętla tła aktywna dla {len(tickers)} tickerów...")
+            print("🔍 Sprawdzanie nowych komunikatów i wiadomości giełdowych...")
+            check_news_feed()
         except Exception as e:
-            print(f"⚠️ Błąd w pętli monitorującej: {e}")
+            print(f"⚠️ Błąd w monitor_stock_job: {e}")
 
-        time.sleep(900)
+        # Odczekaj 10 minut (600 sekund)
+        time.sleep(600)
 
 # ---------------------------------------------------------
 # OBSŁUGA KOMEND TELEGRAMA
@@ -128,12 +191,11 @@ def send_welcome(message):
     help_text = (
         "🤖 **Monitor NewConnect - Bot**\n\n"
         "Dostępne komendy:\n"
-        "🔹 `/lista` - Wyświetla obserwowani spółki z notowaniami\n"
+        "🔹 `/lista` - Wyświetla obserwowane spółki z notowaniami\n"
         "🔹 `/kurs <TICKER>` - Sprawdza pojedynczą spółkę\n"
-        "🔹 `/dodaj <TICKER> <Nazwa>` - Dodaje ticker\n"
-        "🔹 `/usun <TICKER>` - Usuwa ticker\n\n"
-        "Przykład:\n"
-        "`/dodaj WASKO Wasko S.A.`"
+        "🔹 `/dodaj <TICKER> <Nazwa>` - Dodaje ticker do obserwacji\n"
+        "🔹 `/usun <TICKER>` - Usuwa ticker z listy\n\n"
+        "🔔 *Bot automatycznie wysyła powiadomienia w tle o nowych wiadomościach dla Twoich spółek!*"
     )
     bot.reply_to(message, help_text, parse_mode="Markdown")
 
@@ -278,6 +340,5 @@ if __name__ == "__main__":
     
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-
 
 
