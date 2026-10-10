@@ -8,7 +8,7 @@ import telebot
 # ---------------------------------------------------------
 # KONFIGURACJA
 # ---------------------------------------------------------
-TOKEN = "TUTAJ_WKLEJ_SWOJ_TOKEN_Z_BOTFATHER"  # <--- Upewnij się, że wklejasz swój token!
+TOKEN = "8871900897:AAFIfU-7-NjDeULChGNqf5XeV-jXwfaD9yA"  # <--- Upewnij się, że wklejasz swój token!
 TRACKED_FILE = "tracked.json"
 CONFIG_FILE = "config.json"
 
